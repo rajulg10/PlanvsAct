@@ -229,14 +229,6 @@ def generate_report(report_type):
         spaceAfter=12
     )
     
-    normal_style = styles['Normal']
-    small_style = ParagraphStyle(
-        'Small',
-        parent=styles['Normal'],
-        fontSize=8,
-        leading=10
-    )
-    
     # Process each line
     for line_number in [1, 2]:
         elements.append(Paragraph(f"Line {line_number}", heading2_style))
@@ -273,29 +265,72 @@ def generate_report(report_type):
             elements.append(t)
             elements.append(Spacer(1, 20))
             
-            # Loss details
+            # Loss details table
             if daily_data['losses']:
                 elements.append(Paragraph("Loss Details:", heading2_style))
                 
+                # Create loss details table
+                loss_table_data = [['Loss Reason', 'Time Range', 'Duration', 'Remarks']]
+                
                 for reason, loss_data in daily_data['losses'].items():
-                    # Loss reason and total time
-                    elements.append(Paragraph(
-                        f"<b>{reason}</b>: Total {loss_data['total_time']} minutes",
-                        normal_style
-                    ))
-                    
-                    # Loss occurrences with time ranges and remarks
                     for occurrence in loss_data['occurrences']:
-                        occurrence_text = (
-                            f"• Time: {occurrence['time_range']}, "
-                            f"Duration: {occurrence['loss_time']} min"
-                        )
-                        if occurrence['remarks']:
-                            occurrence_text += f"<br/>  Remarks: {occurrence['remarks']}"
-                        
-                        elements.append(Paragraph(occurrence_text, small_style))
+                        loss_table_data.append([
+                            reason,
+                            occurrence['time_range'],
+                            f"{occurrence['loss_time']} min",
+                            occurrence['remarks'] or ''
+                        ])
                     
-                    elements.append(Spacer(1, 10))
+                    # Add a summary row for this reason
+                    loss_table_data.append([
+                        f"Total for {reason}",
+                        '',
+                        f"{loss_data['total_time']} min",
+                        ''
+                    ])
+                
+                # Create the table with specific column widths
+                loss_table = Table(loss_table_data, colWidths=[150, 100, 80, 170])
+                
+                # Style the table
+                table_style = [
+                    # Header row styling
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 9),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                    
+                    # Content styling
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+                    ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 8),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    
+                    # Align durations to center
+                    ('ALIGN', (2, 0), (2, -1), 'CENTER'),
+                ]
+                
+                # Add alternating row colors and total row styling
+                for i in range(len(loss_table_data)):
+                    if i > 0:  # Skip header row
+                        if 'Total for' in loss_table_data[i][0]:
+                            # Style for total rows
+                            table_style.extend([
+                                ('BACKGROUND', (0, i), (-1, i), colors.lightgrey),
+                                ('FONTNAME', (0, i), (-1, i), 'Helvetica-Bold'),
+                                ('LINEABOVE', (0, i), (-1, i), 1, colors.grey),
+                                ('LINEBELOW', (0, i), (-1, i), 1, colors.grey),
+                            ])
+                        elif i % 2 == 1:  # Alternating row colors
+                            table_style.append(('BACKGROUND', (0, i), (-1, i), colors.whitesmoke))
+                
+                loss_table.setStyle(TableStyle(table_style))
+                elements.append(loss_table)
+                elements.append(Spacer(1, 20))
             
             elements.append(Spacer(1, 20))
         
