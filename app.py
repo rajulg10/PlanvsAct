@@ -1,21 +1,52 @@
+import os
+from datetime import datetime, date, timedelta
+from io import BytesIO
+import logging
+from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime, date, timedelta
-import os
-import logging
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from io import BytesIO
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from dotenv import load_dotenv
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///production.db'
+
+# Configure logging
+if os.getenv('FLASK_ENV') == 'production':
+    # Production logging to stdout
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s - [in %(pathname)s:%(lineno)d]'
+    )
+else:
+    # Development logging to file
+    if not os.path.exists('logs'):
+        os.mkdir('logs')
+    file_handler = RotatingFileHandler('logs/planvsactual.log', maxBytes=10240, backupCount=10)
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s - [in %(pathname)s:%(lineno)d]'
+    ))
+    file_handler.setLevel(logging.INFO)
+    app.logger.addHandler(file_handler)
+    app.logger.setLevel(logging.INFO)
+    app.logger.info('PlanVsActual startup')
+
+# Database Configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
+if app.config['SQLALCHEMY_DATABASE_URI'] and app.config['SQLALCHEMY_DATABASE_URI'].startswith('postgres://'):
+    app.config['SQLALCHEMY_DATABASE_URI'] = app.config['SQLALCHEMY_DATABASE_URI'].replace('postgres://', 'postgresql://', 1)
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default-secret-key')
+
+# Database connection logging
+app.logger.info(f"Connecting to database: {app.config['SQLALCHEMY_DATABASE_URI'].split('@')[1] if app.config['SQLALCHEMY_DATABASE_URI'] else 'No database URL configured'}")
+
 db = SQLAlchemy(app)
 
 class ProductionEntry(db.Model):
@@ -38,6 +69,7 @@ class LossEntry(db.Model):
 
 with app.app_context():
     db.create_all()
+    app.logger.info("Database tables created")
 
 @app.route('/')
 def index():
@@ -45,10 +77,18 @@ def index():
 
 @app.route('/api/entry', methods=['POST'])
 def add_entry():
-    data = request.json
-    logger.debug(f"Received data: {data}")
-    
     try:
+        data = request.json
+        app.logger.info(f"Received production entry for Line {data.get('line_number')}")
+        
+        # Validate required fields
+        required_fields = ['line_number', 'from_time', 'to_time', 'planned', 'actual']
+        for field in required_fields:
+            if field not in data:
+                app.logger.error(f"Missing required field: {field}")
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+        
+        # Create production entry
         entry = ProductionEntry(
             timestamp=datetime.now(),
             line_number=data['line_number'],
@@ -56,26 +96,29 @@ def add_entry():
             to_time=datetime.strptime(data['to_time'], '%H:%M').time(),
             planned=data['planned'],
             actual=data['actual'],
-            total_loss_time=data.get('total_loss_time', 0)  # Make total_loss_time optional with default 0
+            total_loss_time=data.get('total_loss_time', 0)
         )
         
-        for loss_data in data.get('losses', []):  # Make losses optional with default empty list
-            loss = LossEntry(
-                reason=loss_data['reason'],
-                loss_time=loss_data['loss_time'],
-                remarks=loss_data.get('remarks', '')
-            )
-            entry.losses.append(loss)
+        # Add losses if present
+        if 'losses' in data:
+            app.logger.info(f"Processing {len(data['losses'])} loss entries")
+            for loss_data in data['losses']:
+                loss = LossEntry(
+                    reason=loss_data['reason'],
+                    loss_time=loss_data['loss_time'],
+                    remarks=loss_data.get('remarks', '')
+                )
+                entry.losses.append(loss)
         
         db.session.add(entry)
         db.session.commit()
-        logger.debug("Entry added successfully")
-        return jsonify({'message': 'Entry added successfully'})
-    
+        app.logger.info(f"Successfully added entry ID: {entry.id}")
+        
+        return jsonify({'success': True, 'id': entry.id})
     except Exception as e:
-        logger.error(f"Error adding entry: {str(e)}")
+        app.logger.error(f"Error adding entry: {str(e)}")
         db.session.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/entry/<int:entry_id>', methods=['GET', 'PUT'])
 def manage_entry(entry_id):
@@ -112,22 +155,24 @@ def manage_entry(entry_id):
                 db.session.delete(loss)
             
             # Add new losses
-            for loss_data in data.get('losses', []):  # Make losses optional with default empty list
-                loss = LossEntry(
-                    reason=loss_data['reason'],
-                    loss_time=loss_data['loss_time'],
-                    remarks=loss_data.get('remarks', '')
-                )
-                entry.losses.append(loss)
+            if 'losses' in data:
+                app.logger.info(f"Processing {len(data['losses'])} loss entries")
+                for loss_data in data['losses']:
+                    loss = LossEntry(
+                        reason=loss_data['reason'],
+                        loss_time=loss_data['loss_time'],
+                        remarks=loss_data.get('remarks', '')
+                    )
+                    entry.losses.append(loss)
             
             db.session.commit()
-            logger.debug("Entry updated successfully")
-            return jsonify({'message': 'Entry updated successfully'})
+            app.logger.info(f"Successfully updated entry ID: {entry.id}")
+            return jsonify({'success': True, 'id': entry.id})
         
         except Exception as e:
-            logger.error(f"Error updating entry: {str(e)}")
+            app.logger.error(f"Error updating entry: {str(e)}")
             db.session.rollback()
-            return jsonify({'error': str(e)}), 400
+            return jsonify({'error': str(e)}), 500
 
 @app.route('/api/daily-report')
 def get_daily_report():
@@ -346,6 +391,49 @@ def generate_report(report_type):
         mimetype='application/pdf'
     )
 
+# Health check endpoint
+@app.route('/health')
+def health_check():
+    try:
+        # Check database connection
+        db.session.execute('SELECT 1')
+        return jsonify({
+            'status': 'healthy',
+            'database': 'connected',
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        app.logger.error(f"Health check failed: {str(e)}")
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+# Error handlers
+@app.errorhandler(404)
+def not_found_error(error):
+    app.logger.error(f"Page not found: {request.url}")
+    return jsonify({'error': 'Not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    app.logger.error(f"Server Error: {error}")
+    db.session.rollback()
+    return jsonify({'error': 'Internal server error'}), 500
+
+# Request logging middleware
+@app.before_request
+def log_request_info():
+    if not request.path == '/health':  # Skip logging health checks
+        app.logger.info(f"Request: {request.method} {request.path} from {request.remote_addr}")
+
+@app.after_request
+def log_response_info(response):
+    if not request.path == '/health':  # Skip logging health checks
+        app.logger.info(f"Response: {response.status} to {request.method} {request.path}")
+    return response
+
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5010))
+    port = int(os.getenv('PORT', 5010))
     app.run(host='0.0.0.0', port=port)

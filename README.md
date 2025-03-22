@@ -1,16 +1,14 @@
 # Production Plan vs Actual Tracker
 
-A Flask web application to track and compare planned vs actual production across multiple production lines. The application helps monitor production efficiency by tracking losses and generating detailed reports.
+A Flask application to track and compare planned vs actual production, with support for managing production losses.
 
 ## Features
 
-- Track production data for multiple production lines
-- Compare planned vs actual production
-- Automatic loss tracking when actual production is less than planned
-- Multiple loss entries with reasons and remarks
-- Daily and weekly production reports
-- Interactive dashboard with real-time updates
-- PDF report generation
+- Track planned vs actual production for multiple lines
+- Record and manage production losses with reasons and remarks
+- Generate daily and weekly PDF reports
+- Visual dashboard with real-time updates
+- Loss tracking with time ranges and detailed remarks
 
 ## Installation
 
@@ -20,43 +18,91 @@ git clone https://github.com/rajulg10/PlanvsAct.git
 cd PlanvsAct
 ```
 
-2. Create and activate a virtual environment:
+2. Create a virtual environment and install dependencies:
 ```bash
 python -m venv venv
-source venv/bin/activate  # On Windows use: venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. Run the application:
+3. Set up environment variables:
 ```bash
-python app.py
+cp .env.example .env
+```
+Edit `.env` with your configuration:
+- Set `SECRET_KEY` for Flask
+- Configure `DATABASE_URL` for PostgreSQL connection
+
+## Database Setup
+
+1. Create a PostgreSQL database
+2. Update the `DATABASE_URL` in your `.env` file:
+```
+DATABASE_URL=postgresql://username:password@localhost:5432/planvsactual
+```
+
+3. Initialize the database:
+```python
+from app import db
+db.create_all()
+```
+
+## Running the Application
+
+```bash
+flask run
 ```
 
 The application will be available at `http://localhost:5000`
 
-## Usage
+## Deployment on Railway
 
-1. Select a production line (Line 1 or Line 2)
-2. Enter the time range, planned production, and actual production
-3. If actual production is less than planned, the loss section will appear automatically
-4. Add loss details with reasons and remarks
-5. Save the entry to update the daily summary
-6. Generate daily or weekly reports in PDF format
+1. Install Railway CLI:
+```bash
+# macOS
+brew install railway
 
-## Technologies Used
+# Windows
+scoop install railway
 
-- Python
-- Flask
-- SQLAlchemy
-- SQLite
-- Bootstrap
-- JavaScript
-- ReportLab (for PDF generation)
+# Linux
+curl -fsSL https://railway.app/install.sh | sh
+```
+
+2. Login to Railway:
+```bash
+railway login
+```
+
+3. Initialize Railway project:
+```bash
+railway init
+```
+
+4. Create PostgreSQL database:
+```bash
+railway add
+```
+Select PostgreSQL from the list of plugins.
+
+5. Deploy the application:
+```bash
+railway up
+```
+
+6. Set environment variables:
+```bash
+railway variables set SECRET_KEY=your-secret-key-here
+```
+
+The application will be automatically deployed and a URL will be provided.
+
+### Monitoring and Logs
+
+- View logs: `railway logs`
+- Check status: `railway status`
+- Open dashboard: `railway open`
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT License
