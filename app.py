@@ -3,8 +3,9 @@ from datetime import datetime, date, timedelta
 from io import BytesIO
 import logging
 from logging.handlers import RotatingFileHandler
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, g
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -18,13 +19,11 @@ app = Flask(__name__)
 
 # Configure logging
 if os.getenv('FLASK_ENV') == 'production':
-    # Production logging to stdout
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s - [in %(pathname)s:%(lineno)d]'
     )
 else:
-    # Development logging to file
     if not os.path.exists('logs'):
         os.mkdir('logs')
     file_handler = RotatingFileHandler('logs/planvsactual.log', maxBytes=10240, backupCount=10)
@@ -37,15 +36,31 @@ else:
     app.logger.info('PlanVsActual startup')
 
 # Database Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
-if app.config['SQLALCHEMY_DATABASE_URI'] and app.config['SQLALCHEMY_DATABASE_URI'].startswith('postgres://'):
-    app.config['SQLALCHEMY_DATABASE_URI'] = app.config['SQLALCHEMY_DATABASE_URI'].replace('postgres://', 'postgresql://', 1)
+database_url = os.getenv('DATABASE_URL')
+if not database_url:
+    database_url = os.getenv('RAILWAY_DATABASE_URL')  # Try Railway's specific variable
+if not database_url:
+    database_url = 'sqlite:///production.db'  # Fallback to SQLite
 
+# Convert postgres:// to postgresql:// if necessary
+if database_url.startswith('postgres://'):
+    database_url = database_url.replace('postgres://', 'postgresql://', 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default-secret-key')
+app.config['SQLALCHEMY_POOL_SIZE'] = 10
+app.config['SQLALCHEMY_MAX_OVERFLOW'] = 10
+app.config['SQLALCHEMY_POOL_RECYCLE'] = 300
+app.config['SQLALCHEMY_POOL_TIMEOUT'] = 30
 
-# Database connection logging
-app.logger.info(f"Connecting to database: {app.config['SQLALCHEMY_DATABASE_URI'].split('@')[1] if app.config['SQLALCHEMY_DATABASE_URI'] else 'No database URL configured'}")
+# Log database configuration (without credentials)
+db_url_parts = database_url.split('@')
+if len(db_url_parts) > 1:
+    safe_db_url = f"...@{db_url_parts[-1]}"
+else:
+    safe_db_url = database_url
+app.logger.info(f"Database URL configured as: {safe_db_url}")
 
 db = SQLAlchemy(app)
 
@@ -67,9 +82,57 @@ class LossEntry(db.Model):
     loss_time = db.Column(db.Integer, nullable=False)  # Loss time in minutes
     remarks = db.Column(db.Text)
 
-with app.app_context():
-    db.create_all()
-    app.logger.info("Database tables created")
+# Initialize database tables
+def init_db():
+    try:
+        with app.app_context():
+            # Test database connection first
+            if 'sqlite' in app.config['SQLALCHEMY_DATABASE_URI']:
+                db.session.execute(text('SELECT sqlite_version()'))
+            else:
+                db.session.execute(text('SELECT 1'))
+            db.session.commit()
+            
+            # Create tables
+            db.create_all()
+            app.logger.info("Database tables created successfully")
+            return True
+    except Exception as e:
+        app.logger.error(f"Database initialization failed: {str(e)}")
+        return False
+
+# Database connection handling
+def get_db():
+    if not hasattr(g, 'db_session'):
+        g.db_session = db.session
+    try:
+        # Test connection with database-agnostic query
+        g.db_session.execute(text('SELECT 1'))
+        g.db_session.commit()
+    except Exception as e:
+        app.logger.error(f"Database connection error: {str(e)}")
+        g.db_session.rollback()
+        # Close and remove the session
+        g.db_session.close()
+        delattr(g, 'db_session')
+        raise
+
+@app.before_request
+def before_request():
+    try:
+        get_db()
+    except Exception:
+        return jsonify({
+            'status': 'error',
+            'message': 'Database connection error',
+            'timestamp': datetime.now().isoformat()
+        }), 503
+
+@app.teardown_appcontext
+def teardown_db(exception=None):
+    db_session = getattr(g, 'db_session', None)
+    if db_session is not None:
+        db_session.close()
 
 @app.route('/')
 def index():
@@ -394,21 +457,44 @@ def generate_report(report_type):
 # Health check endpoint
 @app.route('/health')
 def health_check():
+    health_info = {
+        'status': 'unhealthy',
+        'timestamp': datetime.now().isoformat(),
+        'components': {
+            'database': {
+                'status': 'unhealthy',
+                'details': None
+            }
+        }
+    }
+    
     try:
-        # Check database connection
-        db.session.execute('SELECT 1')
-        return jsonify({
+        # Check database connection using a database-agnostic query
+        if 'sqlite' in app.config['SQLALCHEMY_DATABASE_URI']:
+            # SQLite-specific version query
+            result = db.session.execute(text('SELECT sqlite_version()')).scalar()
+            db_type = 'sqlite'
+        else:
+            # PostgreSQL version query
+            result = db.session.execute(text('SELECT version()')).scalar()
+            db_type = 'postgresql'
+        
+        db.session.commit()
+        
+        health_info['components']['database'] = {
             'status': 'healthy',
-            'database': 'connected',
-            'timestamp': datetime.now().isoformat()
-        })
+            'details': {
+                'version': result,
+                'type': db_type,
+                'uri': safe_db_url  # Using the safe URL we logged earlier
+            }
+        }
+        health_info['status'] = 'healthy'
+        return jsonify(health_info)
     except Exception as e:
         app.logger.error(f"Health check failed: {str(e)}")
-        return jsonify({
-            'status': 'unhealthy',
-            'error': str(e),
-            'timestamp': datetime.now().isoformat()
-        }), 500
+        health_info['components']['database']['details'] = str(e)
+        return jsonify(health_info), 500
 
 # Error handlers
 @app.errorhandler(404)
@@ -433,6 +519,12 @@ def log_response_info(response):
     if not request.path == '/health':  # Skip logging health checks
         app.logger.info(f"Response: {response.status} to {request.method} {request.path}")
     return response
+
+# Initialize database on startup
+if init_db():
+    app.logger.info("Application started successfully with database connection")
+else:
+    app.logger.error("Application started but database initialization failed")
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5010))
