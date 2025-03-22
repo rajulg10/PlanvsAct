@@ -175,10 +175,21 @@ def generate_report_data(start_date, end_date):
         daily_data['actual'] += entry.actual
         daily_data['total_loss_time'] += entry.total_loss_time
         
+        # Group losses by reason with time ranges and remarks
         for loss in entry.losses:
             if loss.reason not in daily_data['losses']:
-                daily_data['losses'][loss.reason] = 0
-            daily_data['losses'][loss.reason] += loss.loss_time
+                daily_data['losses'][loss.reason] = {
+                    'total_time': 0,
+                    'occurrences': []
+                }
+            
+            loss_data = daily_data['losses'][loss.reason]
+            loss_data['total_time'] += loss.loss_time
+            loss_data['occurrences'].append({
+                'time_range': f"{entry.from_time.strftime('%H:%M')}-{entry.to_time.strftime('%H:%M')}",
+                'loss_time': loss.loss_time,
+                'remarks': loss.remarks
+            })
     
     return report_data
 
@@ -210,82 +221,83 @@ def generate_report(report_type):
     title = f"Production Report ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')})"
     elements.append(Paragraph(title, title_style))
     
-    # Generate tables for each line
+    # Styles for the report
+    heading2_style = ParagraphStyle(
+        'Heading2',
+        parent=styles['Heading2'],
+        fontSize=14,
+        spaceAfter=12
+    )
+    
+    normal_style = styles['Normal']
+    small_style = ParagraphStyle(
+        'Small',
+        parent=styles['Normal'],
+        fontSize=8,
+        leading=10
+    )
+    
+    # Process each line
     for line_number in [1, 2]:
+        elements.append(Paragraph(f"Line {line_number}", heading2_style))
         line_data = report_data[line_number]
-        
-        # Line header
-        elements.append(Paragraph(f"Line {line_number}", styles['Heading2']))
-        elements.append(Spacer(1, 12))
-        
-        if not line_data:
-            elements.append(Paragraph("No data available", styles['Normal']))
-            elements.append(Spacer(1, 12))
-            continue
-        
-        # Production summary table
-        data = [['Date', 'Planned', 'Actual', 'Achievement %', 'Loss Time (min)']]
         
         for entry_date in sorted(line_data.keys()):
             daily_data = line_data[entry_date]
-            achievement = (daily_data['actual'] / daily_data['planned'] * 100) if daily_data['planned'] > 0 else 0
             
-            data.append([
-                entry_date.strftime('%Y-%m-%d'),
-                daily_data['planned'],
-                daily_data['actual'],
-                f"{achievement:.1f}%",
-                daily_data['total_loss_time']
-            ])
-        
-        table = Table(data)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-            ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
-            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 10),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
-        ]))
-        elements.append(table)
-        elements.append(Spacer(1, 20))
-        
-        # Loss summary table
-        elements.append(Paragraph("Loss Summary", styles['Heading3']))
-        elements.append(Spacer(1, 12))
-        
-        all_losses = {}
-        for daily_data in line_data.values():
-            for reason, time in daily_data['losses'].items():
-                all_losses[reason] = all_losses.get(reason, 0) + time
-        
-        if all_losses:
-            loss_data = [['Loss Reason', 'Total Time (min)']]
-            for reason, total_time in sorted(all_losses.items()):
-                loss_data.append([reason, total_time])
+            # Daily summary table
+            data = [
+                ['Date', 'Planned', 'Actual', 'Total Loss Time'],
+                [
+                    entry_date.strftime('%Y-%m-%d'),
+                    str(daily_data['planned']),
+                    str(daily_data['actual']),
+                    f"{daily_data['total_loss_time']} min"
+                ]
+            ]
             
-            loss_table = Table(loss_data)
-            loss_table.setStyle(TableStyle([
+            t = Table(data, colWidths=[100, 100, 100, 100])
+            t.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
                 ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 1), (-1, -1), 10),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
             ]))
-            elements.append(loss_table)
-        else:
-            elements.append(Paragraph("No losses recorded", styles['Normal']))
+            elements.append(t)
+            elements.append(Spacer(1, 20))
+            
+            # Loss details
+            if daily_data['losses']:
+                elements.append(Paragraph("Loss Details:", heading2_style))
+                
+                for reason, loss_data in daily_data['losses'].items():
+                    # Loss reason and total time
+                    elements.append(Paragraph(
+                        f"<b>{reason}</b>: Total {loss_data['total_time']} minutes",
+                        normal_style
+                    ))
+                    
+                    # Loss occurrences with time ranges and remarks
+                    for occurrence in loss_data['occurrences']:
+                        occurrence_text = (
+                            f"• Time: {occurrence['time_range']}, "
+                            f"Duration: {occurrence['loss_time']} min"
+                        )
+                        if occurrence['remarks']:
+                            occurrence_text += f"<br/>  Remarks: {occurrence['remarks']}"
+                        
+                        elements.append(Paragraph(occurrence_text, small_style))
+                    
+                    elements.append(Spacer(1, 10))
+            
+            elements.append(Spacer(1, 20))
         
         elements.append(Spacer(1, 30))
     
@@ -295,7 +307,7 @@ def generate_report(report_type):
     
     return send_file(
         buffer,
-        download_name=f'{report_type}_report.pdf',
+        download_name=f'production_report_{start_date.strftime("%Y%m%d")}_{end_date.strftime("%Y%m%d")}.pdf',
         mimetype='application/pdf'
     )
 

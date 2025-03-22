@@ -236,20 +236,46 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById(`dailyEntries${lineNum}`).innerHTML = 
                     entriesHtml || '<p class="text-muted">No entries for today</p>';
                 
-                // Generate loss summary
-                const lossSummary = lineEntries.reduce((acc, entry) => {
+                // Generate loss summary with time ranges and remarks
+                const lossSummary = {};
+                lineEntries.forEach(entry => {
                     entry.losses.forEach(loss => {
-                        acc[loss.reason] = (acc[loss.reason] || 0) + loss.loss_time;
+                        const key = loss.reason;
+                        if (!lossSummary[key]) {
+                            lossSummary[key] = {
+                                totalTime: 0,
+                                occurrences: []
+                            };
+                        }
+                        lossSummary[key].totalTime += loss.loss_time;
+                        lossSummary[key].occurrences.push({
+                            timeRange: `${entry.from_time}-${entry.to_time}`,
+                            lossTime: loss.loss_time,
+                            remarks: loss.remarks
+                        });
                     });
-                    return acc;
-                }, {});
+                });
                 
                 const lossSummaryHtml = Object.entries(lossSummary)
-                    .map(([reason, time]) => `
-                        <div class="card-text">
-                            <strong>${reason}:</strong> ${time} minutes
-                        </div>
-                    `).join('');
+                    .map(([reason, data]) => {
+                        const occurrencesHtml = data.occurrences
+                            .map(occ => `
+                                <div class="ms-3 small">
+                                    <span class="text-muted">${occ.timeRange}</span>: 
+                                    ${occ.lossTime} min
+                                    ${occ.remarks ? `<br><span class="text-muted">Remarks: ${occ.remarks}</span>` : ''}
+                                </div>
+                            `).join('');
+                        
+                        return `
+                            <div class="card mb-2">
+                                <div class="card-body p-2">
+                                    <div><strong>${reason}</strong>: Total ${data.totalTime} minutes</div>
+                                    ${occurrencesHtml}
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
                 
                 document.getElementById(`lossSummary${lineNum}`).innerHTML = 
                     lossSummaryHtml || '<p class="text-muted">No losses recorded</p>';
